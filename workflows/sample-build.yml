@@ -1,0 +1,41 @@
+# Example build.yml that the frontend will send to the backend.
+# The backend pushes this file + your source into a private GitHub repo
+# and triggers it. Only the final artifact ever comes back.
+
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Unique build ID from the liquid-glass site'
+        required: true
+      build_name:
+        description: 'Human name'
+        required: false
+        default: 'build'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Example – build a simple zip of the source
+        run: |
+          echo "Building for ${{ github.event.inputs.build_id }}"
+          # Replace this with your real build commands:
+          # npm ci && npm run build
+          # or xcodebuild, or electron-builder, etc.
+          mkdir -p dist
+          echo "Hello from Gitback build ${{ github.event.inputs.build_id }}" > dist/hello.txt
+          # Example: zip everything
+          zip -r artifact.zip dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.build_name || 'artifact' }}-${{ github.event.inputs.build_id }}
+          path: artifact.zip
+          retention-days: 1   # short lived – we download it immediately
