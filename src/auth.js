@@ -1,33 +1,13 @@
-import jwt from 'jsonwebtoken';
 import { config } from './config.js';
 
-export function login(req, res) {
-  const { username, password } = req.body;
-  if (
-    username === config.siteUsername &&
-    password === config.sitePassword
-  ) {
-    const token = jwt.sign(
-      { sub: username, role: 'owner' },
-      config.jwtSecret,
-      { expiresIn: '7d' }
-    );
-    return res.json({ token, username });
+/**
+ * Extremely simple protection: frontend just sends the shared API key.
+ * No user accounts, no JWT, no site login on the backend.
+ */
+export function requireApiKey(req, res, next) {
+  const key = req.headers['x-api-key'];
+  if (!key || key !== config.apiKey) {
+    return res.status(401).json({ error: 'Invalid or missing X-API-Key' });
   }
-  return res.status(401).json({ error: 'Invalid credentials' });
-}
-
-export function requireAuth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-  }
-  const token = header.slice(7);
-  try {
-    const payload = jwt.verify(token, config.jwtSecret);
-    req.user = payload;
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
+  next();
 }

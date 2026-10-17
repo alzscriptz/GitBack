@@ -1,65 +1,36 @@
-# GitBack – Zero-Leak Actions Backend
+# GitBack – Pure Actions Backend
 
-Secure bridge between your **liquid-glass private site** and real GitHub Actions.
+**Only job:** run GitHub Actions and return the finished artifact.
 
-## Design goals (0 leak / 0 code exposure)
+No site login. No user accounts. No UI.  
+Everything visual + private-site login lives on the liquid-glass frontend.
 
-1. Source code is pushed **only** into a private GitHub repository on a temporary branch.
-2. GitHub Actions runs the build on GitHub’s runners.
-3. When the Action finishes, **only the artifact** is downloaded.
-4. The temporary branch is deleted → source disappears from GitHub.
-5. Frontend never receives source, logs, or workflow details – only a clean download link under “Latest builds”.
-6. **Everything originates from the site.** The backend never exposes project source.
+## What it does
 
-## Quick start
+1. Frontend sends source + `build.yml` + API key
+2. Backend creates a temporary private branch, triggers the Action
+3. When finished → downloads **only** the artifact
+4. Deletes the temporary branch (source is gone)
+5. Frontend gets a clean download link
+
+Zero source leak. Public repo = free unlimited Actions minutes.
+
+## Setup
 
 ```bash
 cp .env.example .env
-# edit .env → put your GitHub token + owner + private build-engine repo
+# fill in API_KEY + GitHub token + private build-engine repo
 npm install
 npm start
 ```
 
-### Required GitHub setup
+## API (all protected by `X-API-Key` header)
 
-1. Create a **private** empty repository that will act as the temporary build engine (e.g. `gitback-build-engine`).
-2. Create a Personal Access Token with:
-   - `repo` (full control)
-   - `workflow`
-   - `actions:read` + `actions:write`
-3. Put the values in `.env`.
+| Method | Path | Description |
+|--------|------|-------------|
+| POST   | `/api/builds` | Start a build |
+| GET    | `/api/builds` | List recent builds |
+| GET    | `/api/builds/:id` | Status + auto-fetch artifact |
+| GET    | `/api/builds/:id/download` | Download the artifact |
 
-### API
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST   | `/api/login` | – | `{ username, password }` → JWT |
-| POST   | `/api/builds` | Bearer | Create a new build (send `workflowContent` + optional `sourceFiles`) |
-| GET    | `/api/builds` | Bearer | List recent builds |
-| GET    | `/api/builds/:id` | Bearer | Poll status + auto-fetch artifact |
-| GET    | `/api/builds/:id/download` | Bearer | Download the finished artifact |
-
-### Example create-build body
-
-```json
-{
-  "buildName": "My iOS App",
-  "workflowContent": "name: build\non:\n  workflow_dispatch: ...",
-  "sourceFiles": [
-    {
-      "path": "src/main.swift",
-      "content": "print(\"hello\")",
-      "encoding": "utf8"
-    }
-  ]
-}
-```
-
-The sample workflow lives in `workflows/sample-build.yml`.
-
-## Security notes
-
-- Source never returns to the frontend.
-- Artifacts are the only thing the site ever sees.
-- Temporary branches are deleted after the artifact is fetched.
-- JWT protects every endpoint that can touch builds.
+That’s the entire backend.
