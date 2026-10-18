@@ -1,66 +1,47 @@
-# GitBack – Pure Actions Backend
+# GitBack – Pure Actions Backend (public code, private secrets)
 
-**Only job:** run GitHub Actions and return the finished artifact.
+**Public repo = zero secrets in git.**  
+Code is public. Tokens live only in host env / GitHub Settings / site Settings.
 
-Frontend (liquid-glass site) → GitBack → private `build-engine` repo → artifact only.
+## Where secrets go (NOT in the repo)
 
-## Secrets you must set (`.env`)
+| Secret | Where you put it |
+|--------|------------------|
+| `GITHUB_TOKEN` | **Host** env vars (Railway/Render/VPS) when you deploy GitBack. Locally: your machine’s env or a **gitignored** `.env` you never commit. |
+| `API_KEY` | Same host env **and** the **site Settings → API Key** (same value both places). |
+| `GITHUB_OWNER` / `GITHUB_REPO` | Host env: `alzscriptz` / `build-engine` |
 
-Copy `.env.example` → `.env` and fill:
+### Optional: GitHub repo Settings secrets
+On **private** `build-engine` only (if a workflow needs them):
 
-```env
-PORT=4000
+**https://github.com/alzscriptz/build-engine/settings/secrets/actions**
 
-# Shared secret — same value goes in the site Settings → API Key
-API_KEY=pick-a-long-random-string-here
+→ New repository secret. Names like `API_KEY` are for Actions workflows, **not** automatically loaded by the Node server.
 
-# GitHub PAT (classic) with scopes: repo + workflow
-GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+The Node server only reads **process environment** at runtime (from the host or a local gitignored `.env`).
 
-# Your account + the private build-engine repo (already created)
-GITHUB_OWNER=alzscriptz
-GITHUB_REPO=build-engine
+## Create the PAT (you do this once)
+1. https://github.com/settings/tokens → classic token  
+2. Scopes: **`repo`** + **`workflow`**  
+3. Put it in the **host** as `GITHUB_TOKEN` — never commit it, never paste it in issues/chat.
 
-ARTIFACTS_DIR=./artifacts-store
-```
-
-### Create the PAT
-1. https://github.com/settings/tokens → **Generate new token (classic)**
-2. Scopes: **`repo`** (full) + **`workflow`**
-3. Paste as `GITHUB_TOKEN`
-
-### Private build engine
-Already created: https://github.com/alzscriptz/build-engine  
-GitBack pushes temp branches there, runs Actions, downloads the artifact, then deletes the branch (zero source leak).
-
-## Run locally
+## Local run (secrets stay on your machine)
 
 ```bash
+git clone https://github.com/alzscriptz/Gitback.git
 cd Gitback
-cp .env.example .env
-# edit .env with the values above
-npm install
-npm start
-# → http://localhost:4000
+cp .env.example .env   # gitignored — fill locally only
+# API_KEY=...  GITHUB_TOKEN=...  GITHUB_OWNER=alzscriptz  GITHUB_REPO=build-engine
+npm install && npm start
 ```
 
-Health check: `GET http://localhost:4000/health`
+## Wire the site
+1. Site: https://gitlab-liquid-alzscriptzs-projects.vercel.app → **Settings**  
+2. Backend URL = where GitBack is running  
+3. API Key = same as host `API_KEY`  
+4. Run Action on a repo
 
-## Wire the site (gitlab-liquid)
+## Flow
+Site (API key in Settings) → GitBack (token in host env) → private `build-engine` temp branch → artifact only → branch deleted.
 
-1. Open https://gitlab-liquid-alzscriptzs-projects.vercel.app
-2. Sign in → **Settings**
-3. Backend URL: `http://localhost:4000` (or your hosted URL)
-4. API Key: same as `API_KEY` in GitBack `.env`
-5. Save → open a repo → **Run Action**
-
-## API (all need header `X-API-Key`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/builds` | Start a build |
-| GET | `/api/builds` | List recent builds |
-| GET | `/api/builds/:id` | Status + fetch artifact |
-| GET | `/api/builds/:id/download` | Download artifact |
-
-Host GitBack anywhere that runs Node continuously (local, Railway, Render, VPS). Vercel serverless is a poor fit because builds poll for minutes and store files on disk.
+`.env` is in `.gitignore`. Public clone never contains secrets.
