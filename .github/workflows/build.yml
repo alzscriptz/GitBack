@@ -33,10 +33,20 @@ jobs:
           token: ${{ secrets.TOKEN }}
           path: source
           fetch-depth: 0
-      - name: Install common build toolchains
+      - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.x
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install Rust and Windows cross-compilation tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Install Windows cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
       - name: Build project using detected project files and collect real outputs
         shell: bash
         env:
