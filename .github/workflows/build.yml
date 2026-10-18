@@ -33,7 +33,7 @@ jobs:
           token: ${{ secrets.TOKEN }}
           path: source
           fetch-depth: 0
-      - name: Build project and collect IPA files
+      - name: Build the actual source project and collect deliverables
         shell: bash
         env:
           SOURCE_REPO: ${{ inputs.source_repo }}
@@ -43,28 +43,39 @@ jobs:
           set -euo pipefail
           mkdir -p release
           cd source
-          echo "Source: $SOURCE_REPO @ $SOURCE_REF"
+          echo "Building $SOURCE_REPO @ $SOURCE_REF"
+          if [ -f .github/workflows/build.yml ]; then
+            echo "Found source .github/workflows/build.yml (kept in checkout)."
+            echo "GitHub Actions YAML is not executable as a shell script; build commands must be represented by the source project's build scripts or a source workflow dispatch."
+          fi
+          produced=0
           if [ -f package.json ]; then
-            npm install --legacy-peer-deps
-            npm run build --if-present
+            if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+              npm install --legacy-peer-deps
+              npm run build
+              if [ -d dist ] && [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+                cp -R dist/. ../release/
+                produced=1
+              elif [ -d build ] && [ "$(find build -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+                cp -R build/. ../release/
+                produced=1
+              fi
+            else
+              echo "package.json exists but has no build script; not inventing a generic output."
+            fi
           fi
-          if [ -d dist ] && [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-            cp -R dist/. ../release/
-          elif [ -d build ] && [ "$(find build -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-            cp -R build/. ../release/
-          fi
-          # Preserve any prebuilt .ipa in the source checkout and put it at the
-          # release root so it can be attached as a downloadable release asset.
-          find . -type f -iname '*.ipa' -not -path './node_modules/*' -print0 |
+          find . -type f -iname '*.ipa' -not -path './node_modules/*' -not -path './.git/*' -print0 |
             while IFS= read -r -d '' ipa; do
-              base="$(basename "$ipa")"
-              cp "$ipa" "../release/$base"
-              echo "Collected IPA: $base"
+              cp "$ipa" "../release/$(basename "$ipa")"
+              echo "Collected existing IPA: $(basename "$ipa")"
             done
           cd ..
-          if [ -z "$(find release -mindepth 1 -maxdepth 1 -type f -print -quit)" ]; then
-            echo "Build completed, but no dist/build output or .ipa was found." > release/BUILD-INFO.txt
-            echo "For iOS source projects, configure a macOS/Xcode build job to produce an IPA." >> release/BUILD-INFO.txt
+          if find release -maxdepth 1 -type f ! -name 'RELEASE-INFO.txt' -print -quit | grep -q .; then
+            produced=1
+          fi
+          if [ "$produced" -ne 1 ]; then
+            echo "::error::No real build output or prebuilt .ipa was produced. GitBack will not package the source tree as a fake release."
+            exit 1
           fi
           printf 'Repository: %s\nBranch: %s\nBuild: %s\nBuilt at: %s\n' "$SOURCE_REPO" "$SOURCE_REF" "$BUILD_NAME" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
       - name: Upload build artifact
