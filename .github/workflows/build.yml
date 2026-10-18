@@ -1,0 +1,63 @@
+name: GitBack Release Builder
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "Owner/repository to build"
+        required: true
+        type: string
+      source_ref:
+        description: "Branch or tag"
+        required: true
+        default: main
+        type: string
+      build_name:
+        description: "Release name"
+        required: true
+        default: release
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitBack runner
+        uses: actions/checkout@v4
+      - name: Checkout source repository (including workflow files)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.TOKEN }}
+          path: source
+          fetch-depth: 0
+      - name: Build source project
+        shell: bash
+        run: |
+          set -e
+          cd source
+          echo "Source repository: ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}"
+          test -d .github/workflows && echo "Workflow files are present in checkout" || true
+          mkdir -p ../release
+          if [ -f package.json ]; then
+            npm install --legacy-peer-deps
+            npm run build --if-present
+          fi
+          if [ -d dist ] && [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+            cp -R dist/. ../release/
+          elif [ -d build ] && [ "$(find build -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+            cp -R build/. ../release/
+          else
+            cp -R . ../release/source/
+          fi
+          cd ..
+          printf 'Repository: %s\nBranch: %s\nBuilt at: %s\n' "${{ inputs.source_repo }}" "${{ inputs.source_ref }}" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
