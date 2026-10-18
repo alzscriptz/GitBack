@@ -1,0 +1,55 @@
+name: GitBack Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Temp branch with source
+        required: true
+        type: string
+      build_id:
+        description: Build id
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+        continue-on-error: true
+
+      - name: Build
+        run: |
+          set -e
+          mkdir -p dist
+          if [ -f package.json ]; then
+            npm install --legacy-peer-deps || true
+            npm run build --if-present || true
+          fi
+          if [ -f build.sh ]; then
+            chmod +x build.sh && ./build.sh || true
+          fi
+          # Collect common outputs
+          find . -type f \( -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.dmg' -o -name '*.app' -o -name 'out.txt' -o -name 'artifact*' \) \
+            ! -path './.git/*' ! -path './node_modules/*' -exec cp -t dist {} + 2>/dev/null || true
+          if [ -d build ]; then cp -r build dist/ 2>/dev/null || true; fi
+          if [ -d dist ] && [ -z "$(ls -A dist 2>/dev/null)" ]; then
+            echo "gitback build ${{ inputs.build_id }} ok" > dist/out.txt
+            date >> dist/out.txt
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ inputs.build_id }}
+          path: dist/
+          if-no-files-found: error
