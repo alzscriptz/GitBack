@@ -1,25 +1,27 @@
 # GitBack
 
-Runs GitHub Actions. Returns only the artifact. Public code, no secrets in git.
+**One public repo.** Actions run here. Artifacts go to the site only. Nothing stays in the repo.
 
-## Secrets (only 2 required)
+## Flow
 
-Set as **environment variables** on the machine/host (or a local `.env` that is gitignored):
+1. Site sends `workflowContent` + optional source files + API key  
+2. GitBack creates a **temp branch** `build/<id>` on **this repo**  
+3. GitHub Actions runs on that branch  
+4. Backend downloads the **artifact only** → serves it to the site  
+5. Temp branch is **deleted** (source gone from the repo)
+
+No separate build-engine. No artifacts left on GitHub for the site to scrape — the site gets the file from GitBack’s download endpoint.
+
+## Secrets (only 2)
 
 | Name | What |
 |------|------|
-| `API_KEY` | Any random string. Same value in the site Settings. |
-| `GITHUB_TOKEN` | GitHub PAT with **`repo`** + **`workflow`** scopes. |
+| `API_KEY` | Random string. Same value in site Settings. |
+| `GITHUB_TOKEN` | PAT with **`repo`** + **`workflow`**. |
 
-Optional (defaults already set):
+Defaults (no need to set): `GITHUB_OWNER=alzscriptz`, `GITHUB_REPO=Gitback`, `PORT=4000`
 
-| Name | Default |
-|------|---------|
-| `GITHUB_OWNER` | `alzscriptz` |
-| `GITHUB_REPO` | `build-engine` |
-| `PORT` | `4000` |
-
-Create PAT: https://github.com/settings/tokens → classic → scopes `repo` + `workflow`
+Token: https://github.com/settings/tokens → classic → `repo` + `workflow`
 
 ## Run
 
@@ -30,18 +32,14 @@ export GITHUB_TOKEN="ghp_..."
 npm start
 ```
 
-Or put those two in a `.env` file (never commit it).
-
 ## Site
 
-Settings → Backend URL = `http://localhost:4000` (or your host URL)  
-Settings → API Key = same as `API_KEY`
+- Backend URL → where this server runs  
+- API Key → same as `API_KEY`
 
-## API
+## API (`X-API-Key` header)
 
-All need header `X-API-Key`:
-
-- `POST /api/builds` body: `{ workflowContent, sourceFiles?, buildName? }`
-- `GET /api/builds/:id` — status / pulls artifact when done
+- `POST /api/builds` `{ workflowContent, sourceFiles?, buildName? }`
+- `GET /api/builds/:id`
 - `GET /api/builds/:id/download`
 - `GET /api/builds`
