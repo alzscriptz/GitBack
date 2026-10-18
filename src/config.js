@@ -5,8 +5,9 @@ export const config = {
   port: process.env.PORT || 4000,
   apiKey: process.env.API_KEY,
   githubToken: process.env.GITHUB_TOKEN,
+  // Actions run ON this same public repo (temp branches only)
   owner: process.env.GITHUB_OWNER || 'alzscriptz',
-  repo: process.env.GITHUB_REPO || 'build-engine',
+  repo: process.env.GITHUB_REPO || 'Gitback',
   artifactsDir: './artifacts',
 };
 
