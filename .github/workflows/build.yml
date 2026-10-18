@@ -17,7 +17,7 @@ on:
         default: release
         type: string
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: Checkout GitBack runner
         uses: actions/checkout@v4
-      - name: Checkout source repository (including workflow files)
+      - name: Checkout source repository (including .github/workflows)
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.source_repo }}
@@ -33,14 +33,17 @@ jobs:
           token: ${{ secrets.TOKEN }}
           path: source
           fetch-depth: 0
-      - name: Build source project
+      - name: Build project and collect IPA files
         shell: bash
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BUILD_NAME: ${{ inputs.build_name }}
         run: |
-          set -e
+          set -euo pipefail
+          mkdir -p release
           cd source
-          echo "Source repository: ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}"
-          test -d .github/workflows && echo "Workflow files are present in checkout" || true
-          mkdir -p ../release
+          echo "Source: $SOURCE_REPO @ $SOURCE_REF"
           if [ -f package.json ]; then
             npm install --legacy-peer-deps
             npm run build --if-present
@@ -49,15 +52,35 @@ jobs:
             cp -R dist/. ../release/
           elif [ -d build ] && [ "$(find build -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
             cp -R build/. ../release/
-          else
-            cp -R . ../release/source/
           fi
+          # Preserve any prebuilt .ipa in the source checkout and put it at the
+          # release root so it can be attached as a downloadable release asset.
+          find . -type f -iname '*.ipa' -not -path './node_modules/*' -print0 |
+            while IFS= read -r -d '' ipa; do
+              base="$(basename "$ipa")"
+              cp "$ipa" "../release/$base"
+              echo "Collected IPA: $base"
+            done
           cd ..
-          printf 'Repository: %s\nBranch: %s\nBuilt at: %s\n' "${{ inputs.source_repo }}" "${{ inputs.source_ref }}" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
-      - name: Upload release artifact
+          if [ -z "$(find release -mindepth 1 -maxdepth 1 -type f -print -quit)" ]; then
+            echo "Build completed, but no dist/build output or .ipa was found." > release/BUILD-INFO.txt
+            echo "For iOS source projects, configure a macOS/Xcode build job to produce an IPA." >> release/BUILD-INFO.txt
+          fi
+          printf 'Repository: %s\nBranch: %s\nBuild: %s\nBuilt at: %s\n' "$SOURCE_REPO" "$SOURCE_REF" "$BUILD_NAME" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: release
           path: release/
           if-no-files-found: error
           retention-days: 30
+      - name: Publish GitHub Release and attach IPA/build outputs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gitback-release-${{ github.run_number }}
+          name: "${{ inputs.build_name }}"
+          body: |
+            Built from ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: release/*
+          fail_on_unmatched_files: false
