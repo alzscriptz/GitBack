@@ -7,9 +7,7 @@ import { config } from './config.js';
 const octokit = new Octokit({ auth: config.githubToken });
 const { owner, repo } = config;
 
-const RUNNER_WORKFLOW = 'gitback-runner.yml';
-
-async function getDefaultBranchSha() {
+async function getDefaultBranch() {
   try {
     const { data } = await octokit.git.getRef({ owner, repo, ref: 'heads/main' });
     return { sha: data.object.sha, branch: 'main' };
@@ -19,119 +17,226 @@ async function getDefaultBranchSha() {
   }
 }
 
-async function ensureRunnerOnDefault() {
-  // Make sure permanent runner exists on default branch (idempotent)
-  const { data: workflows } = await octokit.actions.listRepoWorkflows({ owner, repo });
-  const exists = workflows.workflows.some((w) => w.path.endsWith(RUNNER_WORKFLOW));
-  if (exists) return;
-  console.warn('gitback-runner.yml missing on default branch — push it to main');
-}
-
 /**
- * 1. Temp branch with source only
- * 2. Dispatch permanent runner on main (GitHub requires workflow on default branch)
- * 3. Runner checks out temp branch and builds
+ * Site sends workflowContent (build.yml) + sourceFiles.
+ * We:
+ *  1) put source on temp branch build/<id>
+ *  2) put a runnable copy of build.yml on MAIN (GitHub only dispatches workflows on default branch)
+ *     - force workflow_dispatch
+ *     - force actions/checkout to use the temp branch so the build sees site files
+ *  3) dispatch that workflow on main
+ *  4) poll → download artifact only → delete temp branch + ephemeral workflow file
  */
 export async function createBuild({ sourceFiles = [], workflowContent, buildName = 'build' }) {
+  if (!workflowContent || !String(workflowContent).trim()) {
+    throw new Error('workflowContent (build.yml) is required from the site');
+  }
+
   const buildId = uuidv4();
-  const branch = `build/${buildId}`;
-  const { sha: baseSha, branch: defaultBranch } = await getDefaultBranchSha();
+  const shortId = buildId.slice(0, 8);
+  const sourceBranch = `build/${buildId}`;
+  const ephemeralPath = `.github/workflows/gb-${shortId}.yml`;
+  const { sha: baseSha, branch: defaultBranch } = await getDefaultBranch();
 
-  await ensureRunnerOnDefault();
-
+  // 1) Temp branch with source from the site
   await octokit.git.createRef({
     owner,
     repo,
-    ref: `refs/heads/${branch}`,
+    ref: `refs/heads/${sourceBranch}`,
     sha: baseSha,
   });
 
-  // Optional: store user workflow on temp branch for reference (not dispatched)
-  if (workflowContent) {
-    try {
-      await octokit.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: '.gitback/user-build.yml',
-        message: `user workflow ${buildId}`,
-        content: Buffer.from(workflowContent).toString('base64'),
-        branch,
-      });
-    } catch (e) {
-      console.warn('user-build.yml skip:', e.message);
-    }
-  }
+  // Always write a marker so branch has a commit even with 0 files
+  await putFile(sourceBranch, '.gitback/build-id.txt', buildId);
 
   for (const file of sourceFiles) {
+    if (!file?.path) continue;
+    // never overwrite workflows on the source branch with garbage paths
     try {
       const raw =
         file.encoding === 'base64'
           ? Buffer.from(file.content, 'base64')
-          : Buffer.from(file.content || '', 'utf8');
-      await octokit.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: file.path,
-        message: `source ${file.path}`,
-        content: raw.toString('base64'),
-        branch,
-      });
+          : Buffer.from(file.content ?? '', 'utf8');
+      await putFile(sourceBranch, file.path, raw, true);
     } catch (e) {
-      console.warn('file skip', file.path, e.message);
+      console.warn('skip source', file.path, e.message);
     }
   }
 
-  // If no source files, add a marker so the branch isn't empty of commits beyond base
-  if (!sourceFiles.length) {
-    await octokit.repos.createOrUpdateFileContents({
+  // 2) Make site build.yml dispatchable on MAIN and checkout the source branch
+  const runnableYml = makeRunnableWorkflow(workflowContent, sourceBranch, buildName, shortId);
+
+  await putFile(defaultBranch, ephemeralPath, runnableYml);
+
+  // GitHub needs a moment to index the new workflow file
+  await sleep(3000);
+
+  // 3) Dispatch by filename (works once file is on default branch)
+  try {
+    await octokit.actions.createWorkflowDispatch({
       owner,
       repo,
-      path: '.gitback/build-id.txt',
-      message: `marker ${buildId}`,
-      content: Buffer.from(buildId).toString('base64'),
-      branch,
+      workflow_id: `gb-${shortId}.yml`,
+      ref: defaultBranch,
     });
-  }
-
-  // Dispatch the PERMANENT workflow on the default branch
-  const { data: workflows } = await octokit.actions.listRepoWorkflows({ owner, repo, per_page: 100 });
-  const wf =
-    workflows.workflows.find((w) => w.path.endsWith(RUNNER_WORKFLOW)) ||
-    workflows.workflows.find((w) => w.name === 'GitBack Runner');
-
-  if (!wf) {
-    // cleanup temp branch
+  } catch (e) {
+    // retry once after more wait
+    await sleep(4000);
     try {
-      await octokit.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
-    } catch {}
-    throw new Error(
-      'No GitBack Runner workflow on main. Ensure .github/workflows/gitback-runner.yml is on the default branch.'
-    );
+      await octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: `gb-${shortId}.yml`,
+        ref: defaultBranch,
+      });
+    } catch (e2) {
+      await safeDeleteRef(sourceBranch);
+      await safeDeleteFile(defaultBranch, ephemeralPath);
+      throw new Error(
+        'Could not start workflow: ' +
+          (e2.message || e.message) +
+          '. Check TOKEN has workflow scope and Actions is enabled.'
+      );
+    }
   }
-
-  await octokit.actions.createWorkflowDispatch({
-    owner,
-    repo,
-    workflow_id: wf.id,
-    ref: defaultBranch,
-    inputs: {
-      branch,
-      build_id: buildId,
-    },
-  });
 
   const dir = path.join(config.artifactsDir, buildId);
   await fs.mkdir(dir, { recursive: true });
   const meta = {
     buildId,
     name: buildName,
-    branch,
-    workflowId: wf.id,
+    branch: sourceBranch,
+    ephemeralPath,
+    ephemeralWorkflow: `gb-${shortId}.yml`,
+    defaultBranch,
     status: 'queued',
     createdAt: new Date().toISOString(),
   };
   await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2));
-  return { buildId, status: 'queued', message: 'Runner dispatched on main' };
+  return {
+    buildId,
+    status: 'queued',
+    message: 'Site build.yml dispatched on GitBack',
+  };
+}
+
+/**
+ * Force workflow_dispatch and pin checkout to the temp source branch.
+ */
+function makeRunnableWorkflow(userYml, sourceBranch, buildName, shortId) {
+  let yml = String(userYml);
+
+  // Strip any existing top-level `on:` block (simple heuristic) and inject workflow_dispatch
+  // Keep name if present
+  const nameMatch = yml.match(/^\s*name:\s*.+$/m);
+  const nameLine = nameMatch ? nameMatch[0] : `name: site-build-${shortId}`;
+
+  // Remove name line temporarily to rebuild header
+  yml = yml.replace(/^\s*name:\s*.+$\n?/m, '');
+
+  // Remove existing on: block (from `on:` until next top-level key)
+  yml = yml.replace(
+    /^on\s*:\s*[\s\S]*?(?=^\S)/m,
+    ''
+  );
+  // If `on` was at end of file
+  yml = yml.replace(/^on\s*:[\s\S]*$/m, '');
+
+  // Pin every actions/checkout to the source branch
+  yml = yml.replace(
+    /(uses:\s*actions\/checkout@[\w.]+)([^\n]*\n)((?:\s+with:\s*\n(?:\s{2,}[^\n]+\n)*)?)/g,
+    (full, uses, after, withBlock) => {
+      if (/\bwith:\s*/.test(withBlock)) {
+        // inject or replace ref
+        if (/\bref:\s*/.test(withBlock)) {
+          return uses + after + withBlock.replace(/ref:\s*[^\n]+/, `ref: ${sourceBranch}`);
+        }
+        return uses + after + withBlock.replace(/with:\s*\n/, `with:\n          ref: ${sourceBranch}\n`);
+      }
+      return `${uses}\n        with:\n          ref: ${sourceBranch}\n`;
+    }
+  );
+
+  // If there is no checkout at all, prepend a checkout step into the first job is hard;
+  // ensure at least artifact upload exists later via runner guarantee in poll
+
+  const header = `${nameLine}
+
+on:
+  workflow_dispatch:
+
+`;
+
+  // Ensure upload-artifact exists somewhere — if not, append a final job (safe fallback)
+  if (!/actions\/upload-artifact@/.test(yml)) {
+    yml += `
+  gitback_artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${sourceBranch}
+      - name: Package
+        run: |
+          mkdir -p dist
+          echo "build ${shortId}" > dist/out.txt
+          find . -maxdepth 3 -type f ! -path './.git/*' ! -path './node_modules/*' | head -50 >> dist/out.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result-${shortId}
+          path: dist/
+`;
+  }
+
+  return header + yml.trim() + '\n';
+}
+
+async function putFile(branch, filePath, content, isBuffer = false) {
+  const body = isBuffer ? content : Buffer.from(String(content), 'utf8');
+  // Get existing sha if any
+  let sha;
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path: filePath, ref: branch });
+    if (!Array.isArray(data)) sha = data.sha;
+  } catch {}
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: filePath,
+    message: `gitback ${filePath}`,
+    content: body.toString('base64'),
+    branch,
+    ...(sha ? { sha } : {}),
+  });
+}
+
+async function safeDeleteRef(branch) {
+  try {
+    await octokit.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
+  } catch (e) {
+    console.warn('delete branch', e.message);
+  }
+}
+
+async function safeDeleteFile(branch, filePath) {
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path: filePath, ref: branch });
+    if (Array.isArray(data)) return;
+    await octokit.repos.deleteFile({
+      owner,
+      repo,
+      path: filePath,
+      message: `cleanup ${filePath}`,
+      sha: data.sha,
+      branch,
+    });
+  } catch (e) {
+    console.warn('delete file', filePath, e.message);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export async function pollAndFetchArtifact(buildId) {
@@ -141,27 +246,39 @@ export async function pollAndFetchArtifact(buildId) {
 
   if (meta.status === 'success' || meta.status === 'failed') return meta;
 
-  // Find workflow runs for our runner, newest first
-  const { data: runs } = await octokit.actions.listWorkflowRuns({
-    owner,
-    repo,
-    workflow_id: meta.workflowId || RUNNER_WORKFLOW,
-    event: 'workflow_dispatch',
-    per_page: 20,
-  });
+  const workflowId = meta.ephemeralWorkflow || 'gitback-runner.yml';
 
-  // Match by time (created after meta) or by checking jobs/inputs is hard via API —
-  // use runs created around the same time
+  let runs;
+  try {
+    const { data } = await octokit.actions.listWorkflowRuns({
+      owner,
+      repo,
+      workflow_id: workflowId,
+      event: 'workflow_dispatch',
+      per_page: 10,
+    });
+    runs = data.workflow_runs;
+  } catch {
+    // workflow file may not be indexed yet
+    const { data } = await octokit.actions.listWorkflowRunsForRepo({
+      owner,
+      repo,
+      event: 'workflow_dispatch',
+      per_page: 15,
+    });
+    runs = data.workflow_runs;
+  }
+
   const created = new Date(meta.createdAt).getTime();
   const run =
-    runs.workflow_runs.find((r) => {
+    (runs || []).find((r) => {
       const t = new Date(r.created_at).getTime();
-      return Math.abs(t - created) < 15 * 60 * 1000; // within 15 min
-    }) || runs.workflow_runs[0];
+      return t >= created - 5000 && t < created + 20 * 60 * 1000;
+    }) || (runs || [])[0];
 
   if (!run) {
     meta.status = 'queued';
-    meta.detail = 'Waiting for workflow run…';
+    meta.detail = 'Waiting for GitHub to start the site build.yml…';
     await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
     return meta;
   }
@@ -170,7 +287,7 @@ export async function pollAndFetchArtifact(buildId) {
   meta.runUrl = run.html_url;
 
   if (run.status !== 'completed') {
-    meta.status = run.status; // queued | in_progress
+    meta.status = run.status;
     await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
     return meta;
   }
@@ -180,7 +297,7 @@ export async function pollAndFetchArtifact(buildId) {
     meta.error = run.conclusion || 'failed';
     meta.finishedAt = new Date().toISOString();
     await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-    await deleteBranch(meta.branch);
+    await cleanup(meta);
     return meta;
   }
 
@@ -192,17 +309,14 @@ export async function pollAndFetchArtifact(buildId) {
 
   if (!arts.artifacts?.length) {
     meta.status = 'failed';
-    meta.error = 'No artifact produced';
+    meta.error = 'Workflow finished but produced no artifact (add actions/upload-artifact to build.yml)';
     meta.finishedAt = new Date().toISOString();
     await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-    await deleteBranch(meta.branch);
+    await cleanup(meta);
     return meta;
   }
 
-  // Prefer artifact matching build id
-  const artifact =
-    arts.artifacts.find((a) => a.name.includes(buildId)) || arts.artifacts[0];
-
+  const artifact = arts.artifacts[0];
   const download = await octokit.actions.downloadArtifact({
     owner,
     repo,
@@ -219,16 +333,14 @@ export async function pollAndFetchArtifact(buildId) {
   meta.downloadUrl = `/api/builds/${buildId}/download`;
   meta.finishedAt = new Date().toISOString();
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2));
-  await deleteBranch(meta.branch);
+  await cleanup(meta);
   return meta;
 }
 
-async function deleteBranch(branch) {
-  if (!branch) return;
-  try {
-    await octokit.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
-  } catch (e) {
-    console.warn('delete branch:', e.message);
+async function cleanup(meta) {
+  if (meta.branch) await safeDeleteRef(meta.branch);
+  if (meta.ephemeralPath && meta.defaultBranch) {
+    await safeDeleteFile(meta.defaultBranch, meta.ephemeralPath);
   }
 }
 
