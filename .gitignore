@@ -1,5 +1,0 @@
-node_modules/
-.env
-artifacts-store/
-*.log
-.DS_Store
