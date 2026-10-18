@@ -1,47 +1,47 @@
-# GitBack – Pure Actions Backend (public code, private secrets)
+# GitBack
 
-**Public repo = zero secrets in git.**  
-Code is public. Tokens live only in host env / GitHub Settings / site Settings.
+Runs GitHub Actions. Returns only the artifact. Public code, no secrets in git.
 
-## Where secrets go (NOT in the repo)
+## Secrets (only 2 required)
 
-| Secret | Where you put it |
-|--------|------------------|
-| `GITHUB_TOKEN` | **Host** env vars (Railway/Render/VPS) when you deploy GitBack. Locally: your machine’s env or a **gitignored** `.env` you never commit. |
-| `API_KEY` | Same host env **and** the **site Settings → API Key** (same value both places). |
-| `GITHUB_OWNER` / `GITHUB_REPO` | Host env: `alzscriptz` / `build-engine` |
+Set as **environment variables** on the machine/host (or a local `.env` that is gitignored):
 
-### Optional: GitHub repo Settings secrets
-On **private** `build-engine` only (if a workflow needs them):
+| Name | What |
+|------|------|
+| `API_KEY` | Any random string. Same value in the site Settings. |
+| `GITHUB_TOKEN` | GitHub PAT with **`repo`** + **`workflow`** scopes. |
 
-**https://github.com/alzscriptz/build-engine/settings/secrets/actions**
+Optional (defaults already set):
 
-→ New repository secret. Names like `API_KEY` are for Actions workflows, **not** automatically loaded by the Node server.
+| Name | Default |
+|------|---------|
+| `GITHUB_OWNER` | `alzscriptz` |
+| `GITHUB_REPO` | `build-engine` |
+| `PORT` | `4000` |
 
-The Node server only reads **process environment** at runtime (from the host or a local gitignored `.env`).
+Create PAT: https://github.com/settings/tokens → classic → scopes `repo` + `workflow`
 
-## Create the PAT (you do this once)
-1. https://github.com/settings/tokens → classic token  
-2. Scopes: **`repo`** + **`workflow`**  
-3. Put it in the **host** as `GITHUB_TOKEN` — never commit it, never paste it in issues/chat.
-
-## Local run (secrets stay on your machine)
+## Run
 
 ```bash
-git clone https://github.com/alzscriptz/Gitback.git
-cd Gitback
-cp .env.example .env   # gitignored — fill locally only
-# API_KEY=...  GITHUB_TOKEN=...  GITHUB_OWNER=alzscriptz  GITHUB_REPO=build-engine
-npm install && npm start
+npm install
+export API_KEY="your-random-string"
+export GITHUB_TOKEN="ghp_..."
+npm start
 ```
 
-## Wire the site
-1. Site: https://gitlab-liquid-alzscriptzs-projects.vercel.app → **Settings**  
-2. Backend URL = where GitBack is running  
-3. API Key = same as host `API_KEY`  
-4. Run Action on a repo
+Or put those two in a `.env` file (never commit it).
 
-## Flow
-Site (API key in Settings) → GitBack (token in host env) → private `build-engine` temp branch → artifact only → branch deleted.
+## Site
 
-`.env` is in `.gitignore`. Public clone never contains secrets.
+Settings → Backend URL = `http://localhost:4000` (or your host URL)  
+Settings → API Key = same as `API_KEY`
+
+## API
+
+All need header `X-API-Key`:
+
+- `POST /api/builds` body: `{ workflowContent, sourceFiles?, buildName? }`
+- `GET /api/builds/:id` — status / pulls artifact when done
+- `GET /api/builds/:id/download`
+- `GET /api/builds`
