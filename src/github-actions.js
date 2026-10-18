@@ -316,7 +316,7 @@ export async function pollAndFetchArtifact(buildId) {
     return meta;
   }
 
-  const artifact = arts.artifacts[0];
+  const artifact = arts.artifacts.find((a) => /^(release|result)(-|$)/i.test(a.name)) || arts.artifacts[0];
   const download = await octokit.actions.downloadArtifact({
     owner,
     repo,
