@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: Checkout GitBack runner
         uses: actions/checkout@v4
-      - name: Checkout source repository (including .github/workflows)
+      - name: Checkout source repository
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.source_repo }}
@@ -33,7 +33,11 @@ jobs:
           token: ${{ secrets.TOKEN }}
           path: source
           fetch-depth: 0
-      - name: Build the actual source project and collect deliverables
+      - name: Install common build toolchains
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+      - name: Build project using detected project files and collect real outputs
         shell: bash
         env:
           SOURCE_REPO: ${{ inputs.source_repo }}
@@ -43,55 +47,81 @@ jobs:
           set -euo pipefail
           mkdir -p release
           cd source
-          echo "Building $SOURCE_REPO @ $SOURCE_REF"
-          if [ -f .github/workflows/build.yml ]; then
-            echo "Found source .github/workflows/build.yml (kept in checkout)."
-            echo "GitHub Actions YAML is not executable as a shell script; build commands must be represented by the source project's build scripts or a source workflow dispatch."
+          echo "GitBack building $SOURCE_REPO @ $SOURCE_REF"
+          built=0
+
+          # Build .NET projects into a Windows executable when a project file exists.
+          project="$(find . -maxdepth 5 -type f \\( -name '*.sln' -o -name '*.csproj' \\) -not -path './.git/*' | head -n 1 || true)"
+          if [ -n "$project" ]; then
+            echo "Detected .NET project: $project"
+            dotnet publish "$project" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o "$GITHUB_WORKSPACE/release/dotnet-win-x64"
+            built=1
           fi
-          produced=0
-          if [ -f package.json ]; then
-            if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
-              npm install --legacy-peer-deps
-              npm run build
-              if [ -d dist ] && [ "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-                cp -R dist/. ../release/
-                produced=1
-              elif [ -d build ] && [ "$(find build -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-                cp -R build/. ../release/
-                produced=1
+
+          # Build common project types when their standard manifests exist.
+          if [ -f package.json ] && node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm install --legacy-peer-deps
+            npm run build
+            for out in dist build; do
+              if [ -d "$out" ] && [ "$(find "$out" -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+                mkdir -p "$GITHUB_WORKSPACE/release/$out"
+                cp -R "$out"/. "$GITHUB_WORKSPACE/release/$out"/
+                built=1
               fi
-            else
-              echo "package.json exists but has no build script; not inventing a generic output."
-            fi
-          fi
-          find . -type f -iname '*.ipa' -not -path './node_modules/*' -not -path './.git/*' -print0 |
-            while IFS= read -r -d '' ipa; do
-              cp "$ipa" "../release/$(basename "$ipa")"
-              echo "Collected existing IPA: $(basename "$ipa")"
             done
-          cd ..
-          if find release -maxdepth 1 -type f ! -name 'RELEASE-INFO.txt' -print -quit | grep -q .; then
-            produced=1
           fi
-          if [ "$produced" -ne 1 ]; then
-            echo "::error::No real build output or prebuilt .ipa was produced. GitBack will not package the source tree as a fake release."
+
+          if [ -f go.mod ]; then
+            mkdir -p "$GITHUB_WORKSPACE/release/go"
+            GOOS=windows GOARCH=amd64 go build -o "$GITHUB_WORKSPACE/release/go/app.exe" ./... || {
+              echo "Go build failed for ./...; check the source module's main package and build instructions."
+              exit 1
+            }
+            built=1
+          fi
+
+          if [ -f Cargo.toml ]; then
+            cargo build --release --target x86_64-pc-windows-gnu
+            mkdir -p "$GITHUB_WORKSPACE/release/rust"
+            find target/x86_64-pc-windows-gnu/release -maxdepth 1 -type f -name '*.exe' -exec cp {} "$GITHUB_WORKSPACE/release/rust/" \; 2>/dev/null || true
+            if find "$GITHUB_WORKSPACE/release/rust" -type f -name '*.exe' -print -quit | grep -q .; then built=1; fi
+          fi
+
+          # Include actual deliverables already checked into the repo, not the source tree.
+          find . -type f \\( -iname '*.exe' -o -iname '*.dll' -o -iname '*.msi' -o -iname '*.appx' -o -iname '*.appxbundle' -o -iname '*.ipa' -o -iname '*.apk' -o -iname '*.aab' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.rpm' -o -iname '*.jar' -o -iname '*.wasm' -o -iname '*.zip' \\) \\
+            -not -path './.git/*' -not -path './node_modules/*' -not -path './target/*' -print0 |
+            while IFS= read -r -d '' file; do
+              rel="${file#./}"
+              dest="$GITHUB_WORKSPACE/release/prebuilt/$rel"
+              mkdir -p "$(dirname "$dest")"
+              cp "$file" "$dest"
+              echo "Collected real deliverable: $rel"
+            done
+
+          # Existing binaries are valid outputs even when no compile step is needed.
+          if find "$GITHUB_WORKSPACE/release" -type f ! -name 'RELEASE-INFO.txt' -print -quit | grep -q .; then
+            built=1
+          fi
+          if [ "$built" -ne 1 ]; then
+            echo "::error::No supported build manifest or real deliverable was found. Add project-specific build instructions or a supported build manifest; GitBack will not fabricate an output."
             exit 1
           fi
+          cd "$GITHUB_WORKSPACE"
           printf 'Repository: %s\nBranch: %s\nBuild: %s\nBuilt at: %s\n' "$SOURCE_REPO" "$SOURCE_REF" "$BUILD_NAME" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
-      - name: Upload build artifact
+      - name: Upload actual build outputs
         uses: actions/upload-artifact@v4
         with:
           name: release
           path: release/
           if-no-files-found: error
           retention-days: 30
-      - name: Publish GitHub Release and attach IPA/build outputs
+      - name: Publish release with generated outputs
         uses: softprops/action-gh-release@v2
         with:
           tag_name: gitback-release-${{ github.run_number }}
           name: "${{ inputs.build_name }}"
           body: |
-            Built from ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
+            Build source: ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
             Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: release/*
+          files: release/**/*
           fail_on_unmatched_files: false
