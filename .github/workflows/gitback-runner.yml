@@ -4,47 +4,81 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: Temp branch with source
-        required: true
+        description: Temp branch in Gitback (used when source_repo is blank)
+        required: false
+        default: main
         type: string
       build_id:
-        description: Build id
+        description: Build id used in the artifact name
         required: true
+        type: string
+      source_repo:
+        description: Private or public GitHub source repository, for example alzscriptz/K1ext
+        required: false
+        type: string
+      source_ref:
+        description: Branch, tag, or commit in source_repo
+        required: false
+        default: main
         type: string
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
-      - name: Checkout source branch
+      - name: Checkout Gitback temp branch
+        if: ${{ inputs.source_repo == '' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.branch }}
+          path: source
+
+      - name: Checkout requested source repository
+        if: ${{ inputs.source_repo != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.TOKEN }}
+          path: source
 
       - name: Setup Node
+        if: ${{ hashFiles('source/package.json') != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-        continue-on-error: true
 
-      - name: Build
+      - name: Build and collect artifacts
+        shell: bash
         run: |
-          set -e
-          mkdir -p dist
-          if [ -f package.json ]; then
-            npm install --legacy-peer-deps || true
-            npm run build --if-present || true
-          fi
+          set -euo pipefail
+          SOURCE="$GITHUB_WORKSPACE/source"
+          OUTPUT="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$OUTPUT"
+          cd "$SOURCE"
+
           if [ -f build.sh ]; then
-            chmod +x build.sh && ./build.sh || true
+            chmod +x build.sh
+            ./build.sh
+          elif [ -f package.json ]; then
+            npm install --legacy-peer-deps
+            npm run build --if-present
           fi
-          # Collect common outputs
-          find . -type f \( -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.dmg' -o -name '*.app' -o -name 'out.txt' -o -name 'artifact*' \) \
-            ! -path './.git/*' ! -path './node_modules/*' -exec cp -t dist {} + 2>/dev/null || true
-          if [ -d build ]; then cp -r build dist/ 2>/dev/null || true; fi
-          if [ -d dist ] && [ -z "$(ls -A dist 2>/dev/null)" ]; then
-            echo "gitback build ${{ inputs.build_id }} ok" > dist/out.txt
-            date >> dist/out.txt
+
+          if [ -d "$SOURCE/dist" ]; then
+            cp -R "$SOURCE/dist/." "$OUTPUT/"
+          fi
+          if [ -d "$SOURCE/build" ]; then
+            cp -R "$SOURCE/build" "$OUTPUT/"
+          fi
+
+          find "$SOURCE" -type f \\( -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name 'artifact*' \\) \\
+            ! -path "$SOURCE/.git/*" ! -path "$SOURCE/.build/*" ! -path "$SOURCE/node_modules/*" ! -path "$SOURCE/dist/*" \\
+            -exec cp {} "$OUTPUT/" \\;
+
+          if [ -z "$(find "$OUTPUT" -mindepth 1 -print -quit)" ]; then
+            echo "The build completed without producing an artifact." >&2
+            exit 1
           fi
 
       - name: Upload artifact
