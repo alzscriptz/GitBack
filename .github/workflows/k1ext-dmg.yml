@@ -15,7 +15,7 @@ on:
       build_name:
         description: "GitBack release name"
         required: true
-        default: K1ext 1.1.4 — Startup Crash Fix
+        default: K1ext 1.2.0 — Workspace Polish and File Actions
         type: string
 permissions:
   contents: write
@@ -33,7 +33,7 @@ jobs:
       - name: Build and package macOS DMG
         shell: bash
         env:
-          VERSION: "1.1.4"
+          VERSION: "1.2.0"
         run: |
           set -euo pipefail
           xcode-select -p
@@ -45,16 +45,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: K1ext-${{ github.run_number }}-macOS-DMG
-          path: dist/K1ext-1.1.4-macOS.dmg
+          path: dist/K1ext-1.2.0-macOS.dmg
           if-no-files-found: error
           retention-days: 30
       - name: Publish DMG to GitBack release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: K1ext-1.1.4-${{ github.run_number }}
+          tag_name: K1ext-1.2.0-${{ github.run_number }}
           name: "${{ inputs.build_name }}"
           body: |
             macOS DMG built from private source ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
             Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: dist/K1ext-1.1.4-macOS.dmg
+          files: dist/K1ext-1.2.0-macOS.dmg
           fail_on_unmatched_files: true
