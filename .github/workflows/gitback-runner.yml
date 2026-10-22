@@ -72,9 +72,9 @@ jobs:
             cp -R "$SOURCE/build" "$OUTPUT/"
           fi
 
-          find "$SOURCE" -type f \\( -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name 'artifact*' \\) \\
-            ! -path "$SOURCE/.git/*" ! -path "$SOURCE/.build/*" ! -path "$SOURCE/node_modules/*" ! -path "$SOURCE/dist/*" \\
-            -exec cp {} "$OUTPUT/" \\;
+          find "$SOURCE" -type f \( -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name 'artifact*' \) \
+            ! -path "$SOURCE/.git/*" ! -path "$SOURCE/.build/*" ! -path "$SOURCE/node_modules/*" ! -path "$SOURCE/dist/*" \
+            -exec cp {} "$OUTPUT/" \;
 
           if [ -z "$(find "$OUTPUT" -mindepth 1 -print -quit)" ]; then
             echo "The build completed without producing an artifact." >&2
