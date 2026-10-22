@@ -40,6 +40,7 @@ jobs:
           repository: ${{ inputs.source_repo }}
           ref: ${{ inputs.source_ref }}
           token: ${{ secrets.TOKEN }}
+          persist-credentials: false
           path: source
 
       - name: Setup Node
