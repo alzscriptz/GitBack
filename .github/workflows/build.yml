@@ -84,6 +84,29 @@ jobs:
                 built=1
               fi
             done
+
+            # Bundle a runnable Next.js production build when next build writes .next/.
+            if [ -d .next ]; then
+              npm prune --omit=dev --legacy-peer-deps
+              deploy="$GITHUB_WORKSPACE/release/$BUILD_NAME-nextjs"
+              mkdir -p "$deploy"
+              cp -R .next node_modules "$deploy/"
+              cp package.json "$deploy/"
+              if [ -f package-lock.json ]; then cp package-lock.json "$deploy/"; fi
+              if [ -d public ]; then cp -R public "$deploy/"; fi
+              for config in next.config.js next.config.mjs next.config.ts; do
+                if [ -f "$config" ]; then cp "$config" "$deploy/"; fi
+              done
+              cat > "$deploy/start.sh" <<'START_SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          npm start
+          START_SCRIPT
+              chmod +x "$deploy/start.sh"
+              (cd "$GITHUB_WORKSPACE/release" && zip -qr "$BUILD_NAME-nextjs.zip" "$BUILD_NAME-nextjs")
+              built=1
+            fi
           fi
 
           if [ -f go.mod ]; then
