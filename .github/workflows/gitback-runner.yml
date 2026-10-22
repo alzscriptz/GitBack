@@ -22,6 +22,9 @@ on:
         default: main
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -88,3 +91,15 @@ jobs:
           name: result-${{ inputs.build_id }}
           path: dist/
           if-no-files-found: error
+
+      - name: Publish DMG as a GitBack release asset
+        if: ${{ hashFiles('dist/*.dmg') != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ inputs.build_id }}-${{ github.run_number }}"
+          name: "${{ inputs.build_id }}"
+          body: |
+            macOS DMG built from ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: dist/*.dmg
+          fail_on_unmatched_files: true
