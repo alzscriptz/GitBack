@@ -18,19 +18,21 @@ on:
         type: string
 permissions:
   contents: write
-  actions: read
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout GitBack runner
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Checkout source repository
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.source_repo }}
           ref: ${{ inputs.source_ref }}
           token: ${{ secrets.TOKEN }}
+          persist-credentials: false
           path: source
           fetch-depth: 0
       - name: Install .NET SDK
@@ -60,22 +62,25 @@ jobs:
           echo "GitBack building $SOURCE_REPO @ $SOURCE_REF"
           built=0
 
-          # Build .NET projects into a Windows executable when a project file exists.
-          project="$(find . -maxdepth 5 -type f \\( -name '*.sln' -o -name '*.csproj' \\) -not -path './.git/*' | head -n 1 || true)"
+          # Prefer a project file; fall back to a solution file.
+          project="$(find . -maxdepth 5 -type f -name '*.csproj' -print -quit || true)"
+          if [ -z "$project" ]; then
+            project="$(find . -maxdepth 5 -type f -name '*.sln' -print -quit || true)"
+          fi
           if [ -n "$project" ]; then
             echo "Detected .NET project: $project"
             dotnet publish "$project" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o "$GITHUB_WORKSPACE/release/dotnet-win-x64"
             built=1
           fi
 
-          # Build common project types when their standard manifests exist.
+          # Build Node projects only when their manifest declares a build script.
           if [ -f package.json ] && node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
             npm install --legacy-peer-deps
             npm run build
             for out in dist build; do
-              if [ -d "$out" ] && [ "$(find "$out" -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+              if [ -d "$out" ] && [ -n "$(find "$out" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
                 mkdir -p "$GITHUB_WORKSPACE/release/$out"
-                cp -R "$out"/. "$GITHUB_WORKSPACE/release/$out"/
+                cp -R "$out/." "$GITHUB_WORKSPACE/release/$out/"
                 built=1
               fi
             done
@@ -83,32 +88,36 @@ jobs:
 
           if [ -f go.mod ]; then
             mkdir -p "$GITHUB_WORKSPACE/release/go"
-            GOOS=windows GOARCH=amd64 go build -o "$GITHUB_WORKSPACE/release/go/app.exe" ./... || {
-              echo "Go build failed for ./...; check the source module's main package and build instructions."
-              exit 1
-            }
+            GOOS=windows GOARCH=amd64 go build -o "$GITHUB_WORKSPACE/release/go/app.exe" ./...
             built=1
           fi
 
           if [ -f Cargo.toml ]; then
             cargo build --release --target x86_64-pc-windows-gnu
             mkdir -p "$GITHUB_WORKSPACE/release/rust"
-            find target/x86_64-pc-windows-gnu/release -maxdepth 1 -type f -name '*.exe' -exec cp {} "$GITHUB_WORKSPACE/release/rust/" \; 2>/dev/null || true
+            find target/x86_64-pc-windows-gnu/release -maxdepth 1 -type f -name '*.exe' -exec cp {} "$GITHUB_WORKSPACE/release/rust/" + 2>/dev/null || true
             if find "$GITHUB_WORKSPACE/release/rust" -type f -name '*.exe' -print -quit | grep -q .; then built=1; fi
           fi
 
-          # Include actual deliverables already checked into the repo, not the source tree.
-          find . -type f \\( -iname '*.exe' -o -iname '*.dll' -o -iname '*.msi' -o -iname '*.appx' -o -iname '*.appxbundle' -o -iname '*.ipa' -o -iname '*.apk' -o -iname '*.aab' -o -iname '*.appimage' -o -iname '*.deb' -o -iname '*.rpm' -o -iname '*.jar' -o -iname '*.wasm' -o -iname '*.zip' \\) \\
-            -not -path './.git/*' -not -path './node_modules/*' -not -path './target/*' -print0 |
-            while IFS= read -r -d '' file; do
-              rel="${file#./}"
-              dest="$GITHUB_WORKSPACE/release/prebuilt/$rel"
-              mkdir -p "$(dirname "$dest")"
-              cp "$file" "$dest"
-              echo "Collected real deliverable: $rel"
-            done
+          # Collect checked-in binaries and archives without shell-escaped find groups.
+          while IFS= read -r -d '' file; do
+            case "${file,,}" in
+              *.exe|*.dll|*.msi|*.appx|*.appxbundle|*.ipa|*.apk|*.aab|*.appimage|*.deb|*.rpm|*.jar|*.wasm|*.zip)
+                rel="${file#./}"
+                dest="$GITHUB_WORKSPACE/release/prebuilt/$rel"
+                mkdir -p "$(dirname "$dest")"
+                cp "$file" "$dest"
+                echo "Collected real deliverable: $rel"
+                ;;
+            esac
+          done < <(find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './target/*' -print0)
 
-          # Existing binaries are valid outputs even when no compile step is needed.
+          # Package plain static sites as a ZIP when no compiler manifest exists.
+          if [ "$built" -eq 0 ] && [ -f index.html ]; then
+            zip -qr "$GITHUB_WORKSPACE/release/$BUILD_NAME-static-site.zip" . -x '.git/*' 'node_modules/*' 'release/*' 'target/*'
+            built=1
+          fi
+
           if find "$GITHUB_WORKSPACE/release" -type f ! -name 'RELEASE-INFO.txt' -print -quit | grep -q .; then
             built=1
           fi
