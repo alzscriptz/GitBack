@@ -150,6 +150,28 @@ jobs:
           fi
           cd "$GITHUB_WORKSPACE"
           printf 'Repository: %s\nBranch: %s\nBuild: %s\nBuilt at: %s\n' "$SOURCE_REPO" "$SOURCE_REF" "$BUILD_NAME" "$(date -u +%FT%TZ)" > release/RELEASE-INFO.txt
+      - name: Package outputs for release upload
+        shell: bash
+        env:
+          BUILD_NAME: ${{ inputs.build_name }}
+        run: |
+          set -euo pipefail
+          bundle_dir="$RUNNER_TEMP/gitback-release-bundle"
+          mkdir -p "$bundle_dir"
+          shopt -s dotglob nullglob
+          for item in release/*; do
+            if [ "$(basename "$item")" != "RELEASE-INFO.txt" ]; then
+              cp -R "$item" "$bundle_dir/"
+            fi
+          done
+          if [ -z "$(find "$bundle_dir" -mindepth 1 -print -quit)" ]; then
+            echo "::error::No release payload was produced."
+            exit 1
+          fi
+          bundle="$RUNNER_TEMP/$BUILD_NAME-bundle.zip"
+          (cd "$bundle_dir" && zip -qr "$bundle" .)
+          find release -mindepth 1 -maxdepth 1 ! -name 'RELEASE-INFO.txt' -exec rm -rf -- {} +
+          cp "$bundle" release/
       - name: Upload actual build outputs
         uses: actions/upload-artifact@v4
         with:
@@ -165,5 +187,5 @@ jobs:
           body: |
             Build source: ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
             Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: release/**/*
+          files: release/*.zip
           fail_on_unmatched_files: false
