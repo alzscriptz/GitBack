@@ -1,105 +1,53 @@
-name: GitBack Runner
+name: GitBack Runner — K1e0n DMG
 
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: Temp branch in Gitback (used when source_repo is blank)
-        required: false
+      source_ref:
+        description: Private K1e0n branch, tag, or commit
+        required: true
         default: main
         type: string
       build_id:
-        description: Build id used in the artifact name
+        description: DMG filename/version label
         required: true
-        type: string
-      source_repo:
-        description: Private or public GitHub source repository, for example alzscriptz/K1ext
-        required: false
-        type: string
-      source_ref:
-        description: Branch, tag, or commit in source_repo
-        required: false
-        default: main
+        default: K1e0n-macOS
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: macos-15
     steps:
-      - name: Checkout Gitback temp branch
-        if: ${{ inputs.source_repo == '' }}
+      - name: Checkout private K1e0n source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
-          path: source
-
-      - name: Checkout requested source repository
-        if: ${{ inputs.source_repo != '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.source_repo }}
+          repository: alzscriptz/K1e0n
           ref: ${{ inputs.source_ref }}
           token: ${{ secrets.TOKEN }}
           persist-credentials: false
           path: source
 
-      - name: Setup Node
-        if: ${{ hashFiles('source/package.json') != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Build and collect artifacts
+      - name: Build K1e0n DMG
         shell: bash
+        working-directory: source
         run: |
           set -euo pipefail
-          SOURCE="$GITHUB_WORKSPACE/source"
-          OUTPUT="$GITHUB_WORKSPACE/dist"
-          mkdir -p "$OUTPUT"
-          cd "$SOURCE"
+          make dmg
+          test -s build/K1e0n.dmg
 
-          if [ -f build.sh ]; then
-            chmod +x build.sh
-            ./build.sh
-          elif [ -f package.json ]; then
-            npm install --legacy-peer-deps
-            npm run build --if-present
-          fi
-
-          if [ -d "$SOURCE/dist" ]; then
-            cp -R "$SOURCE/dist/." "$OUTPUT/"
-          fi
-          if [ -d "$SOURCE/build" ]; then
-            cp -R "$SOURCE/build" "$OUTPUT/"
-          fi
-
-          find "$SOURCE" -type f \( -name '*.dmg' -o -name '*.ipa' -o -name '*.apk' -o -name '*.exe' -o -name '*.zip' -o -name 'artifact*' \) \
-            ! -path "$SOURCE/.git/*" ! -path "$SOURCE/.build/*" ! -path "$SOURCE/node_modules/*" ! -path "$SOURCE/dist/*" \
-            -exec cp {} "$OUTPUT/" \;
-
-          if [ -z "$(find "$OUTPUT" -mindepth 1 -print -quit)" ]; then
-            echo "The build completed without producing an artifact." >&2
-            exit 1
-          fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: result-${{ inputs.build_id }}
-          path: dist/
-          if-no-files-found: error
-
-      - name: Publish DMG as a GitBack release asset
-        if: ${{ hashFiles('dist/*.dmg') != '' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "${{ inputs.build_id }}-${{ github.run_number }}"
-          name: "${{ inputs.build_id }}"
-          body: |
-            macOS DMG built from ${{ inputs.source_repo }} @ ${{ inputs.source_ref }}.
-            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: dist/*.dmg
-          fail_on_unmatched_files: true
+      - name: Upload DMG to private K1e0n repository
+        env:
+          GH_TOKEN: ${{ secrets.K1E0N_TOKEN }}
+          BUILD_ID: ${{ inputs.build_id }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          gh release create "$BUILD_ID-${GITHUB_RUN_NUMBER}" \
+            "$GITHUB_WORKSPACE/source/build/K1e0n.dmg#K1e0n.dmg" \
+            --repo alzscriptz/K1e0n \
+            --title "$BUILD_ID" \
+            --notes "DMG built from private K1e0n source ref: $SOURCE_REF. GitBack run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
