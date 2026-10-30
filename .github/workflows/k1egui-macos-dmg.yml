@@ -1,0 +1,72 @@
+name: K1eGUI macOS DMG (private source)
+
+on:
+  push:
+    paths:
+      - ".github/workflows/k1egui-macos-dmg.yml"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Private k1egui branch, tag, or commit to build
+        required: true
+        default: feat/macos-dmg-release
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    env:
+      SOURCE_REF: ${{ github.event.inputs.source_ref || 'feat/macos-dmg-release' }}
+    steps:
+      - name: Check out private K1eGUI source
+        uses: actions/checkout@v4
+        with:
+          repository: alzscriptz/k1egui
+          ref: ${{ github.event.inputs.source_ref || 'feat/macos-dmg-release' }}
+          token: ${{ secrets.TOKEN }}
+          persist-credentials: false
+          path: source
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package.json
+
+      - name: Install dependencies
+        working-directory: source
+        run: npm install
+
+      - name: Build Next.js standalone app
+        working-directory: source
+        run: npm run build
+
+      - name: Package macOS DMG
+        working-directory: source
+        run: npx electron-builder --mac dmg
+
+      - name: Verify DMG
+        working-directory: source
+        run: test -n "$(find release -maxdepth 1 -name '*.dmg' -type f -print -quit)"
+
+      - name: Publish DMG to private k1egui release
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
+          SOURCE_SHA: ${{ steps.checkout.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG="$(find "$GITHUB_WORKSPACE/source/release" -maxdepth 1 -name '*.dmg' -type f -print -quit)"
+          test -n "$DMG"
+          SOURCE_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)"
+          VERSION="$(node -p "require('./source/package.json').version")"
+          TAG="v${VERSION}-macos.${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" "$DMG" \
+            --repo alzscriptz/k1egui \
+            --target "$SOURCE_SHA" \
+            --title "K1eGUI macOS DMG $TAG" \
+            --notes "macOS DMG built by GitBack Actions from private k1egui ref: $SOURCE_REF. Source commit: $SOURCE_SHA. Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
