@@ -45,13 +45,61 @@ jobs:
         working-directory: source
         run: npm run build
 
-      - name: Package macOS DMG
+      - name: Package macOS app bundle
         working-directory: source
-        run: npx electron-builder --mac dmg --publish never
+        run: npx electron-builder --mac dir --publish never
 
-      - name: Verify DMG
+      - name: Ad-hoc sign app and verify its bundle
         working-directory: source
-        run: test -n "$(find release -maxdepth 1 -name '*.dmg' -type f -print -quit)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
+          test -n "$APP_PATH"
+          # Ad-hoc signing helps avoid malformed/unsigned arm64 bundles; no paid certificate required.
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          # Remove build-machine metadata before placing the app into the disk image.
+          xattr -cr "$APP_PATH"
+
+      - name: Smoke-test packaged app startup
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
+          open "$APP_PATH"
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:41739/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Packaged K1eGUI did not serve HTTP on 127.0.0.1:41739."
+            exit 1
+          fi
+          # Shut down this smoke-test instance before building the DMG.
+          osascript -e 'tell application "K1eGUI" to quit' || true
+          sleep 2
+
+      - name: Create DMG containing tested app
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
+          test -n "$APP_PATH"
+          STAGING="$RUNNER_TEMP/k1egui-dmg"
+          mkdir -p "$STAGING"
+          ditto "$APP_PATH" "$STAGING/K1eGUI.app"
+          ln -s /Applications "$STAGING/Applications"
+          DMG="$GITHUB_WORKSPACE/source/release/K1eGUI-1.0.0-arm64.dmg"
+          hdiutil create -volname "K1eGUI" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          hdiutil verify "$DMG"
+          test -s "$DMG"
 
       - name: Publish DMG to private k1egui release
         env:
@@ -62,10 +110,9 @@ jobs:
           DMG="$(find "$GITHUB_WORKSPACE/source/release" -maxdepth 1 -name '*.dmg' -type f -print -quit)"
           test -n "$DMG"
           SOURCE_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)"
-          VERSION="$(node -p "require('./source/package.json').version")"
-          TAG="v${VERSION}-macos.${GITHUB_RUN_NUMBER}"
+          TAG="v1.0.0-macos.fixed.${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" "$DMG" \
             --repo alzscriptz/k1egui \
             --target "$SOURCE_SHA" \
             --title "K1eGUI macOS DMG $TAG" \
-            --notes "macOS DMG built by GitBack Actions from private k1egui ref: $SOURCE_REF. Source commit: $SOURCE_SHA. Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --notes "K1eGUI app bundle ad-hoc signed and smoke-tested on macOS before packaging. Built by GitBack Actions from private k1egui ref: $SOURCE_REF. Source commit: $SOURCE_SHA. Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
