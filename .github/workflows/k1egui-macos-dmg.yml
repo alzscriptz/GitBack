@@ -154,15 +154,23 @@ jobs:
           SOURCE_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)"
           TAG="v1.0.0-macos.fixed.${GITHUB_RUN_NUMBER}"
           NOTES="K1eGUI app bundle ad-hoc signed and smoke-tested on macOS before packaging. Built by GitBack Actions from private k1egui ref: $SOURCE_REF. Source commit: $SOURCE_SHA. Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          # GitHub API occasionally drops connections; retry release creation/upload instead of losing a tested build.
+          # Re-runs reuse the same run number/tag. If the release already exists,
+          # replace its DMG asset with the newly rebuilt and smoke-tested installer.
           for attempt in 1 2 3 4 5; do
-            if gh release create "$TAG" "$DMG" \
-              --repo alzscriptz/k1egui \
-              --target "$SOURCE_SHA" \
-              --title "K1eGUI macOS DMG $TAG" \
-              --notes "$NOTES"; then
-              echo "Published tested DMG in private release $TAG."
-              exit 0
+            if gh release view "$TAG" --repo alzscriptz/k1egui >/dev/null 2>&1; then
+              if gh release upload "$TAG" "$DMG" --repo alzscriptz/k1egui --clobber; then
+                echo "Replaced DMG with newly smoke-tested build in release $TAG."
+                exit 0
+              fi
+            else
+              if gh release create "$TAG" "$DMG" \
+                --repo alzscriptz/k1egui \
+                --target "$SOURCE_SHA" \
+                --title "K1eGUI macOS DMG $TAG" \
+                --notes "$NOTES"; then
+                echo "Published tested DMG in private release $TAG."
+                exit 0
+              fi
             fi
             echo "Release publish attempt $attempt failed; retrying in $((attempt * 10)) seconds."
             sleep $((attempt * 10))
