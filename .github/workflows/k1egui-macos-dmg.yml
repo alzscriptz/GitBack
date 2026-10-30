@@ -56,20 +56,24 @@ jobs:
           set -euo pipefail
           APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
           test -n "$APP_PATH"
-          # Ad-hoc signing helps avoid malformed/unsigned arm64 bundles; no paid certificate required.
           codesign --force --deep --sign - "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          # Remove build-machine metadata before placing the app into the disk image.
           xattr -cr "$APP_PATH"
 
-      # The app server is launched with Electron utilityProcess in the private source.
       - name: Smoke-test packaged app startup
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
-          open "$APP_PATH"
+          test -n "$APP_PATH"
+          RESOURCES="$APP_PATH/Contents/Resources"
+          echo "Checking packaged standalone server bundle..."
+          ls -la "$RESOURCES/app" | head -40
+          test -f "$RESOURCES/app/server.js"
+          OUT_LOG="$RUNNER_TEMP/k1egui-stdout.log"
+          ERR_LOG="$RUNNER_TEMP/k1egui-stderr.log"
+          open --stdout "$OUT_LOG" --stderr "$ERR_LOG" "$APP_PATH"
           ready=0
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:41739/ >/dev/null; then
@@ -80,9 +84,16 @@ jobs:
           done
           if [ "$ready" -ne 1 ]; then
             echo "Packaged K1eGUI did not serve HTTP on 127.0.0.1:41739."
+            echo "--- app stdout ---"
+            cat "$OUT_LOG" 2>/dev/null || true
+            echo "--- app stderr ---"
+            cat "$ERR_LOG" 2>/dev/null || true
+            echo "--- running K1eGUI processes ---"
+            ps aux | grep -i '[K]1eGUI\|[s]erver.js' || true
+            echo "--- recent unified logs ---"
+            log show --last 3m --style compact --predicate 'process CONTAINS[c] "K1eGUI" OR eventMessage CONTAINS[c] "K1eGUI"' 2>/dev/null | tail -100 || true
             exit 1
           fi
-          # Shut down this smoke-test instance before building the DMG.
           osascript -e 'tell application "K1eGUI" to quit' || true
           sleep 2
 
