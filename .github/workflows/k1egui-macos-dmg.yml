@@ -62,6 +62,7 @@ jobs:
           # Remove build-machine metadata before placing the app into the disk image.
           xattr -cr "$APP_PATH"
 
+      # The app server is launched with Electron utilityProcess in the private source.
       - name: Smoke-test packaged app startup
         working-directory: source
         shell: bash
