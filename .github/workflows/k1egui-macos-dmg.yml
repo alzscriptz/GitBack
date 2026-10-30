@@ -45,6 +45,18 @@ jobs:
         working-directory: source
         run: npm run build
 
+      # Ensure runtime dependencies are physically present beside server.js in the packaged app.
+      # The previous smoke test proved this standalone output lacked the "next" module.
+      - name: Ensure standalone server runtime dependencies are packaged
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .next/standalone/node_modules
+          ditto node_modules .next/standalone/node_modules
+          test -f .next/standalone/node_modules/next/package.json
+          echo "Next.js runtime dependency present in standalone bundle."
+
       - name: Package macOS app bundle
         working-directory: source
         run: npx electron-builder --mac dir --publish never
