@@ -61,6 +61,24 @@ jobs:
         working-directory: source
         run: npx electron-builder --mac dir --publish never
 
+      - name: Ensure packaged app contains Next.js runtime
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find release -maxdepth 3 -type d -name 'K1eGUI.app' -print -quit)"
+          test -n "$APP_PATH"
+          APP_RESOURCES="$APP_PATH/Contents/Resources/app"
+          echo "Checking where electron-builder placed the standalone dependencies..."
+          find "$APP_RESOURCES" -maxdepth 3 -path '*/next/package.json' -print | head -20 || true
+          # electron-builder's default ignore rules can omit node_modules from extraResources.
+          # Explicitly put the built standalone runtime next to server.js in the actual .app.
+          mkdir -p "$APP_RESOURCES/node_modules"
+          ditto .next/standalone/node_modules "$APP_RESOURCES/node_modules"
+          test -f "$APP_RESOURCES/node_modules/next/package.json"
+          test -f "$APP_RESOURCES/server.js"
+          echo "Packaged app has server.js and node_modules/next/package.json."
+
       - name: Ad-hoc sign app and verify its bundle
         working-directory: source
         shell: bash
