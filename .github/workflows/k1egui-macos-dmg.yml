@@ -51,6 +51,9 @@ jobs:
           node --check electron/studio-agent.cjs
           node -e "Promise.all([import('@modelcontextprotocol/sdk/client/index.js'), import('@modelcontextprotocol/sdk/client/stdio.js')]).then(() => console.log('MCP SDK client and stdio transport load successfully.'))"
           npm ls @modelcontextprotocol/sdk
+          grep -q "runFragmentedAgent" electron/studio-agent.cjs
+          grep -q "runFragmentedAgent" electron/main.cjs
+          echo "Studio MCP agent and small-step workflow are present."
 
 
       - name: Build Next.js standalone app
