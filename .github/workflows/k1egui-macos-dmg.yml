@@ -41,6 +41,18 @@ jobs:
         working-directory: source
         run: npm install
 
+      - name: Verify native Studio MCP runtime
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check electron/main.cjs
+          node --check electron/mcp.cjs
+          node --check electron/studio-agent.cjs
+          node -e "Promise.all([import('@modelcontextprotocol/sdk/client/index.js'), import('@modelcontextprotocol/sdk/client/stdio.js')]).then(() => console.log('MCP SDK client and stdio transport load successfully.'))"
+          npm ls @modelcontextprotocol/sdk
+
+
       - name: Build Next.js standalone app
         working-directory: source
         run: npm run build
